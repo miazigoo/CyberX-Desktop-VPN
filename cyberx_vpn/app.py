@@ -22,6 +22,8 @@ def main():
     app = QApplication(sys.argv)
     app.setApplicationName("CyberX VPN")
     app.setStyleSheet(STYLE)
+    # окно сворачивается в трей, а не закрывает приложение
+    app.setQuitOnLastWindowClosed(False)
     w = MainWindow(_app_dir())
     w.show()
     sys.exit(app.exec())

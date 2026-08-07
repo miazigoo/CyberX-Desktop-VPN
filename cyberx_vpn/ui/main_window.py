@@ -13,9 +13,11 @@ from PySide6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QMainWindow,
+    QMenu,
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
+    QSystemTrayIcon,
     QVBoxLayout,
     QWidget,
 )
@@ -42,8 +44,14 @@ class MainWindow(QMainWindow):
 
         self.setWindowTitle("CyberX VPN")
         self.resize(480, 760)
-        if os.path.isfile(logo_256):
-            self.setWindowIcon(QIcon(logo_256))
+        self._icon = QIcon(logo_256) if os.path.isfile(logo_256) else QIcon()
+        if not self._icon.isNull():
+            self.setWindowIcon(self._icon)
+
+        # флаг «пользователь вышел из приложения» — отличает выход из трея
+        # от простого закрытия окна (которое сворачивает в трей)
+        self._quitting = False
+        self._tray_hint_shown = False
 
         self.tun = TunManager(app_dir)
         self.servers: list[dict] = []
@@ -140,7 +148,71 @@ class MainWindow(QMainWindow):
             self.status_lbl.setText("Подключено (туннель поднят ранее)")
             self.log_msg("Обнаружен поднятый ранее TUN-интерфейс")
             self._run_worker(check_ip, on_done=self._ip_ok, on_fail=lambda e: None)
+
+        self._setup_tray()
+        self._tray_update()
         self.on_fetch()
+
+    # --- трей ---
+
+    def _setup_tray(self):
+        """Создаёт иконку в системном трее с меню управления.
+
+        Закрытие окна прячет его в трей (туннель продолжает работать),
+        полный выход — только через пункт меню «Выход».
+        """
+        if not QSystemTrayIcon.isSystemTrayAvailable():
+            self.tray = None
+            return
+        self.tray = QSystemTrayIcon(self._icon, self)
+        menu = QMenu()
+        self.tray_status_action = menu.addAction("Не подключено")
+        self.tray_status_action.setEnabled(False)
+        menu.addSeparator()
+        open_action = menu.addAction("Открыть")
+        open_action.triggered.connect(self._tray_show_window)
+        self.tray_toggle_action = menu.addAction("Подключиться")
+        self.tray_toggle_action.triggered.connect(self.on_go_clicked)
+        menu.addSeparator()
+        quit_action = menu.addAction("Выход")
+        quit_action.triggered.connect(self._tray_quit)
+        self.tray.setContextMenu(menu)
+        self.tray.activated.connect(self._tray_activated)
+        self.tray.show()
+
+    def _tray_update(self):
+        """Синхронизирует tooltip и пункты меню трея с текущим состоянием."""
+        if not self.tray:
+            return
+        if self.connecting:
+            state = "Подключение..."
+        elif self.connected:
+            name = self.current["name"] if self.current else "туннель"
+            state = f"Подключено: {name}"
+        else:
+            state = "Не подключено"
+        self.tray.setToolTip(f"CyberX VPN — {state}")
+        self.tray_status_action.setText(state)
+        self.tray_toggle_action.setText(
+            "Отключиться" if self.connected else "Подключиться"
+        )
+        self.tray_toggle_action.setEnabled(not self.connecting)
+
+    def _tray_show_window(self):
+        """Показывает и поднимает главное окно из трея."""
+        self.showNormal()
+        self.raise_()
+        self.activateWindow()
+
+    def _tray_activated(self, reason):
+        """Клик по иконке трея — показать окно."""
+        if reason == QSystemTrayIcon.Trigger:
+            self._tray_show_window()
+
+    def _tray_quit(self):
+        """Полный выход из приложения (останавливает туннель)."""
+        self._quitting = True
+        self.close()
 
     # --- служебное ---
 
@@ -241,6 +313,7 @@ class MainWindow(QMainWindow):
         self._save_settings()
         self.connecting = True
         self.connect_btn.set_connecting(True)
+        self._tray_update()
         self.status_lbl.setText(f"Подключение: {server['name']} (запрос пароля)")
         self.log_msg(
             f"Поднимаю туннель → {server['name']} ({server['host']}:{server['port']})"
@@ -257,6 +330,7 @@ class MainWindow(QMainWindow):
         self.connected = True
         self.connect_btn.set_connecting(False)
         self.connect_btn.set_connected(True)
+        self._tray_update()
         self.log_msg(f"sing-box: {msg}")
         self.log_msg(
             "Весь трафик через туннель; DNS → DoH через VPN; "
@@ -273,6 +347,7 @@ class MainWindow(QMainWindow):
         self.connecting = False
         self.connected = False
         self.connect_btn.set_connecting(False)
+        self._tray_update()
         self._err(e)
 
     def _ip_ok(self, info):
@@ -291,11 +366,28 @@ class MainWindow(QMainWindow):
         self.connected = False
         self.current = None
         self.connect_btn.set_connected(False)
+        self._tray_update()
         self.status_lbl.setText("Не подключено. Готов к подключению")
 
     def closeEvent(self, event):
-        """При закрытии сохраняет настройки и аккуратно гасит туннель."""
+        """Закрытие окна: сворачивает в трей, а не выходит из приложения.
+
+        Полный выход (с остановкой туннеля) — только при _quitting=True,
+        т.е. через пункт «Выход» в меню трея.
+        """
         self._save_settings()
+        if self.tray and not self._quitting:
+            event.ignore()
+            self.hide()
+            if not self._tray_hint_shown:
+                self._tray_hint_shown = True
+                self.tray.showMessage(
+                    "CyberX VPN",
+                    "Приложение свёрнуто в трей. Туннель продолжает работать.",
+                    self._icon,
+                    4000,
+                )
+            return
         if self.connected:
             try:
                 self.tun.stop()
