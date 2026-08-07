@@ -1,0 +1,39 @@
+[project]
+name = "cyberx-vpn"
+version = "0.2.0"
+description = "CyberX VPN — десктопный клиент для Debian (PySide6 + sing-box, TUN)"
+requires-python = ">=3.10"
+dependencies = [
+    "PySide6>=6.6",
+]
+
+[project.optional-dependencies]
+dev = [
+    "ruff>=0.6",
+    "pre-commit>=3.5",
+    "pytest>=8.0",
+    "pyinstaller>=6.0",
+]
+
+[tool.ruff]
+line-length = 88
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "D"]
+ignore = [
+    "D203",  # 1 blank line before class docstring — конфликтует с D211
+    "D213",  # multi-line docstring summary — конфликтует с D212
+    "D401",  # first line imperative mood — пишем по-русски, неприменимо
+]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["D100", "D103"]
+"main.py" = ["D100"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
