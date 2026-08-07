@@ -4,6 +4,8 @@
 идёт через туннель (sing-box, VLESS + Reality). UI повторяет Android-клиент
 [CyberX-android-VPN](https://github.com/miazigoo/CyberX-android-VPN).
 
+![CyberX VPN — подключённое состояние](docs/screenshot.png)
+
 ## Возможности
 
 - Загрузка серверов из ссылки подписки (vless://, base64).
