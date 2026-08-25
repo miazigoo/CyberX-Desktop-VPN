@@ -6,6 +6,7 @@ import os
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QIcon, QPixmap
 from PySide6.QtWidgets import (
+    QCheckBox,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -23,6 +24,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..netcheck import check_ip
+from ..routing import parse_bypass_list
 from ..subscription import fetch_subscription, parse_vless
 from ..tunnel import TunManager
 from .connect_button import ConnectButton
@@ -43,7 +45,7 @@ class MainWindow(QMainWindow):
         logo_256 = os.path.join(app_dir, "assets", "cyberx_mark_256.png")
 
         self.setWindowTitle("CyberX VPN")
-        self.resize(480, 760)
+        self.resize(480, 880)
         self._icon = QIcon(logo_256) if os.path.isfile(logo_256) else QIcon()
         if not self._icon.isNull():
             self.setWindowIcon(self._icon)
@@ -135,6 +137,44 @@ class MainWindow(QMainWindow):
         p_lay.addWidget(hint)
         lay.addWidget(panel, 1)
 
+        exc_panel = QFrame()
+        exc_panel.setObjectName("glass")
+        exc_lay = QVBoxLayout(exc_panel)
+        exc_lay.setContentsMargins(16, 14, 16, 14)
+        exc_lay.setSpacing(8)
+        exc_title = QLabel("Исключения")
+        exc_title.setObjectName("panelTitle")
+        exc_lay.addWidget(exc_title)
+
+        self.exclude_lan_cb = QCheckBox("Локальная сеть без VPN")
+        self.exclude_lan_cb.setToolTip(
+            "192.168.x, 10.x, docker-сети и другие частные адреса идут напрямую"
+        )
+        self.exclude_lan_cb.setChecked(self.settings.get("exclude_lan", True))
+        exc_lay.addWidget(self.exclude_lan_cb)
+
+        bypass_lbl = QLabel("Сайты без VPN (домен, URL или IP — по одному в строке)")
+        bypass_lbl.setObjectName("hint")
+        exc_lay.addWidget(bypass_lbl)
+
+        self.bypass_edit = QPlainTextEdit()
+        self.bypass_edit.setPlaceholderText(
+            "youtube.com\nhttps://example.com/path\n2ip.ru\n# комментарии через #"
+        )
+        saved_bypass = self.settings.get("bypass", [])
+        if isinstance(saved_bypass, list):
+            self.bypass_edit.setPlainText("\n".join(saved_bypass))
+        else:
+            self.bypass_edit.setPlainText(str(saved_bypass))
+        self.bypass_edit.setFixedHeight(72)
+        exc_lay.addWidget(self.bypass_edit)
+
+        exc_hint = QLabel("Применяется при следующем подключении")
+        exc_hint.setObjectName("hint")
+        exc_hint.setAlignment(Qt.AlignCenter)
+        exc_lay.addWidget(exc_hint)
+        lay.addWidget(exc_panel)
+
         self.log = QPlainTextEdit()
         self.log.setReadOnly(True)
         self.log.setMaximumBlockCount(500)
@@ -223,9 +263,18 @@ class MainWindow(QMainWindow):
         except Exception:
             return {}
 
+    def _routing_settings(self) -> dict:
+        """Текущие настройки маршрутизации из UI."""
+        return {
+            "exclude_lan": self.exclude_lan_cb.isChecked(),
+            "bypass": parse_bypass_list(self.bypass_edit.toPlainText()),
+        }
+
     def _save_settings(self):
-        """Сохраняет ссылку подписки в settings.json."""
+        """Сохраняет настройки в settings.json."""
         self.settings["sub_url"] = self.url_edit.text().strip()
+        self.settings["exclude_lan"] = self.exclude_lan_cb.isChecked()
+        self.settings["bypass"] = parse_bypass_list(self.bypass_edit.toPlainText())
         try:
             json.dump(
                 self.settings,
@@ -303,7 +352,7 @@ class MainWindow(QMainWindow):
             self._do_connect()
 
     def _do_connect(self):
-        """Запускает подъём TUN к выбранному серверу (в фоне, через pkexec)."""
+        """Запускает подъём TUN к выбранному серверу (в фоне)."""
         row = self.list.currentRow()
         if row < 0 or row >= len(self.servers):
             self.status_lbl.setText("Сначала выберите сервер в списке")
@@ -314,12 +363,12 @@ class MainWindow(QMainWindow):
         self.connecting = True
         self.connect_btn.set_connecting(True)
         self._tray_update()
-        self.status_lbl.setText(f"Подключение: {server['name']} (запрос пароля)")
+        self.status_lbl.setText(f"Подключение: {server['name']}…")
         self.log_msg(
             f"Поднимаю туннель → {server['name']} ({server['host']}:{server['port']})"
         )
         self._run_worker(
-            lambda: self.tun.start(server),
+            lambda: self.tun.start(server, self._routing_settings()),
             on_done=self._tun_up,
             on_fail=self._tun_fail,
         )
@@ -332,10 +381,17 @@ class MainWindow(QMainWindow):
         self.connect_btn.set_connected(True)
         self._tray_update()
         self.log_msg(f"sing-box: {msg}")
-        self.log_msg(
-            "Весь трафик через туннель; DNS → DoH через VPN; "
-            "LAN и docker-сети исключены."
-        )
+        routing = self._routing_settings()
+        parts = []
+        if routing["exclude_lan"]:
+            parts.append("LAN/docker без VPN")
+        bypass = routing["bypass"]
+        if bypass:
+            parts.append(f"обход: {len(bypass)} шт.")
+        if parts:
+            self.log_msg("Исключения: " + "; ".join(parts))
+        else:
+            self.log_msg("Весь трафик через туннель (исключений нет)")
         self._run_worker(
             check_ip,
             on_done=self._ip_ok,

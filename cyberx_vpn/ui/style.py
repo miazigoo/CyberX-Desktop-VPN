@@ -70,5 +70,20 @@ QPlainTextEdit {
     font-size: 11px;
     padding: 6px;
 }
+QCheckBox {
+    color: #E7F0FF;
+    spacing: 8px;
+}
+QCheckBox::indicator {
+    width: 18px;
+    height: 18px;
+    border-radius: 5px;
+    border: 1px solid rgba(95, 123, 168, 0.45);
+    background: rgba(19, 29, 46, 0.55);
+}
+QCheckBox::indicator:checked {
+    background: #1677FF;
+    border-color: #1677FF;
+}
 QToolTip { background: #131D2E; color: #E7F0FF; border: 1px solid #335F7BA8; }
 """

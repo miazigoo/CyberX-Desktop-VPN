@@ -9,9 +9,9 @@
 ## Возможности
 
 - Загрузка серверов из ссылки подписки (vless://, base64).
-- Полный VPN (TUN, интерфейс `cyberx0`): auto_route, DNS → DoH поверх туннеля,
-  приватные сети (LAN, docker-мосты) исключены из маршрутизации.
-- Root-операции — через `pkexec helper.sh` (polkit-запрос пароля).
+- Полный VPN (TUN, интерфейс `cyberx0`): auto_route, DNS → DoH поверх туннеля.
+- Исключения: локальная сеть без VPN (опционально), список сайтов напрямую.
+- Root-операции — через `helper.sh` (passwordless sudo после установки).
 - Тёмная фирменная тема, круглая анимированная кнопка GO/ON.
 
 ## Структура
@@ -20,7 +20,7 @@
 cyberx_vpn/            # пакет приложения
 ├── subscription.py    # загрузка подписки, парсинг vless://
 ├── configgen.py       # генерация конфига sing-box
-├── tunnel.py          # TunManager — управление TUN через pkexec
+├── tunnel.py          # TunManager — управление TUN через helper.sh
 ├── netcheck.py        # проверка внешнего IP через туннель
 ├── app.py             # точка входа (QApplication)
 └── ui/
@@ -29,7 +29,8 @@ cyberx_vpn/            # пакет приложения
     ├── style.py       # QSS-тема
     └── worker.py      # фоновые потоки
 main.py                # лаунчер из исходников
-helper.sh              # root-хелпер (up/down/status), вызывается через pkexec
+helper.sh              # root-хелпер (up/down/status)
+tools/install.sh       # установка + одноразовая настройка sudo
 tools/fetch_singbox.sh # скачивание sing-box (не хранится в git)
 tests/                 # pytest, ядро без GUI
 assets/                # иконка-щит (svg + png)
@@ -62,19 +63,39 @@ python3 -m venv .venv
 ## Сборка и установка
 
 ```bash
-.venv/bin/pyinstaller --noconfirm cyberx-vpn.spec
-cd dist/cyberx-vpn && cp -r _internal/helper.sh _internal/sing-box _internal/assets . && chmod +x helper.sh sing-box
-cp -r dist/cyberx-vpn ~/apps/cyberx-vpn
+chmod +x tools/install.sh
+./tools/install.sh
 ```
 
-Ярлык в меню приложений: `~/.local/share/applications/cyberx-vpn.desktop`,
-иконка: `~/.local/share/icons/hicolor/256x256/apps/cyberx-vpn.png`.
+Скрипт собирает бандл, копирует в `~/apps/cyberx-vpn`, ставит ярлык в меню
+и **один раз** спрашивает пароль sudo — после этого VPN включается и
+выключается без повторных запросов.
+
+Для разработки из исходников (без PyInstaller):
+
+```bash
+./tools/install.sh --dev
+```
+
+Только перенастроить sudo, если helper уже на месте:
+
+```bash
+./tools/install.sh --sudoers-only --dir ~/apps/cyberx-vpn
+```
+
+Удалить sudoers-правило:
+
+```bash
+./tools/uninstall.sh
+```
 
 ## Аварийный сброс
 
 Если приложение закрылось, а туннель остался:
 
 ```bash
+sudo ~/apps/cyberx-vpn/helper.sh down
+# или, если sudoers не настроен:
 pkexec ~/apps/cyberx-vpn/helper.sh down
 ```
 

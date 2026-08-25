@@ -2,7 +2,12 @@
 
 import base64
 
-from cyberx_vpn.configgen import ROUTE_EXCLUDE, TUN_IF, build_singbox_config
+from cyberx_vpn.configgen import (
+    ROUTE_EXCLUDE,
+    TUN_IF,
+    build_singbox_config,
+)
+from cyberx_vpn.routing import build_bypass_route_rule, parse_bypass_list
 from cyberx_vpn.subscription import parse_vless
 
 VLESS = (
@@ -42,6 +47,57 @@ def test_singbox_config_structure():
     assert out["tls"]["server_name"] == "ya.ru"
 
     assert {"protocol": "dns", "action": "hijack-dns"} in cfg["route"]["rules"]
+    assert len(cfg["dns"]["servers"]) == 2
+
+
+def test_singbox_no_lan_exclude():
+    """Без exclude_lan приватные сети не исключаются из TUN."""
+    cfg = build_singbox_config(parse_vless(VLESS), exclude_lan=False)
+    tun = cfg["inbounds"][0]
+    assert "route_exclude_address" not in tun
+
+
+def test_singbox_bypass_domains():
+    """Домены из списка обхода идут через direct."""
+    cfg = build_singbox_config(
+        parse_vless(VLESS),
+        bypass=["youtube.com", "2ip.ru", "10.1.2.3"],
+    )
+    rules = cfg["route"]["rules"]
+    bypass = next(r for r in rules if r.get("outbound") == "direct")
+    assert "youtube.com" in bypass["domain_suffix"]
+    assert "2ip.ru" in bypass["domain_suffix"]
+    assert "10.1.2.3/32" in bypass["ip_cidr"]
+    assert cfg["dns"]["rules"]
+
+
+def test_singbox_bypass_uses_network_dns():
+    """Исключённые внутренние домены резолвятся DNS текущей сети."""
+    cfg = build_singbox_config(
+        parse_vless(VLESS),
+        bypass=["srv-dnp.argos.loc"],
+        direct_dns="172.16.2.5",
+    )
+    direct_dns = next(s for s in cfg["dns"]["servers"] if s["tag"] == "direct")
+    assert direct_dns["address"] == "172.16.2.5"
+
+
+def test_parse_bypass_list():
+    """Список обхода парсится из текста с комментариями."""
+    items = parse_bypass_list("ya.ru\n# skip\n\n*.google.com, github.com")
+    assert items == ["ya.ru", "*.google.com", "github.com"]
+
+
+def test_bypass_url_is_normalized_to_domain():
+    """URL из адресной строки браузера применяется к домену и поддоменам."""
+    rule = build_bypass_route_rule(["https://srv-dnp.argos.loc/path?q=1"])
+    assert rule == {"outbound": "direct", "domain_suffix": ["srv-dnp.argos.loc"]}
+
+
+def test_build_bypass_route_rule():
+    """Правило обхода собирается только из валидных записей."""
+    rule = build_bypass_route_rule(["bad domain!", "ok.ru"])
+    assert rule == {"outbound": "direct", "domain_suffix": ["ok.ru"]}
 
 
 def test_subscription_body_decoding():

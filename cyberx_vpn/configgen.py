@@ -1,50 +1,77 @@
 """Генерация конфигурации sing-box из параметров сервера."""
 
-# Приватные диапазоны НЕ заворачиваются в туннель: локальная сеть
-# и docker-мосты (172.16/12) должны остаться доступными напрямую.
-ROUTE_EXCLUDE = [
-    "10.0.0.0/8",
-    "100.64.0.0/10",
-    "169.254.0.0/16",
-    "172.16.0.0/12",
-    "192.168.0.0/16",
-    "224.0.0.0/4",
-]
+from .routing import (
+    LAN_EXCLUDE,
+    build_bypass_dns_rules,
+    build_bypass_route_rule,
+    parse_bypass_list,
+)
+
+# Обратная совместимость для тестов и внешних импортов.
+ROUTE_EXCLUDE = LAN_EXCLUDE
 
 TUN_IF = "cyberx0"
 
 
-def build_singbox_config(server: dict) -> dict:
+def build_singbox_config(
+    server: dict,
+    *,
+    exclude_lan: bool = True,
+    bypass: list[str] | str | None = None,
+    direct_dns: str | None = None,
+) -> dict:
     """Собирает полный конфиг sing-box для TUN-режима под заданный сервер.
 
     server — словарь из subscription.parse_vless().
-    Схема: tun-inbound с auto_route, DNS перехватывается и уходит
-    через DoH поверх туннеля, весь остальной трафик — в VLESS+Reality.
+    exclude_lan — не направлять приватные подсети в туннель.
+    bypass — домены/IP, которые идут напрямую, минуя VPN.
+    direct_dns — DNS-сервер текущей сети для исключённых доменов.
     """
+    bypass_entries = parse_bypass_list(bypass)
+    bypass_rule = build_bypass_route_rule(bypass_entries)
+    bypass_dns = build_bypass_dns_rules(bypass_entries)
+
+    tun_inbound: dict = {
+        "type": "tun",
+        "tag": "tun-in",
+        "interface_name": TUN_IF,
+        "address": ["172.19.0.1/30"],
+        "auto_route": True,
+        "sniff": True,
+    }
+    if exclude_lan:
+        tun_inbound["route_exclude_address"] = LAN_EXCLUDE
+
+    dns_servers = [
+        {
+            "tag": "remote",
+            "address": "https://1.1.1.1/dns-query",
+            "detour": "proxy",
+        },
+        {
+            "tag": "direct",
+            # Внутренние имена (например, *.corp или *.loc) доступны только
+            # через DNS текущей сети, а не через публичный резолвер.
+            "address": direct_dns or "223.5.5.5",
+            "detour": "direct",
+        },
+    ]
+
+    route_rules: list[dict] = [{"protocol": "dns", "action": "hijack-dns"}]
+    if bypass_rule:
+        route_rules.append(bypass_rule)
+
+    dns_block: dict = {
+        "servers": dns_servers,
+        "rules": bypass_dns,
+        "final": "remote",
+        "strategy": "ipv4_only",
+    }
+
     return {
         "log": {"level": "info", "timestamp": True},
-        "dns": {
-            "servers": [
-                {
-                    "tag": "remote",
-                    "address": "https://1.1.1.1/dns-query",
-                    "detour": "proxy",
-                },
-            ],
-            "final": "remote",
-            "strategy": "ipv4_only",
-        },
-        "inbounds": [
-            {
-                "type": "tun",
-                "tag": "tun-in",
-                "interface_name": TUN_IF,
-                "address": ["172.19.0.1/30"],
-                "auto_route": True,
-                "route_exclude_address": ROUTE_EXCLUDE,
-                "sniff": True,
-            }
-        ],
+        "dns": dns_block,
+        "inbounds": [tun_inbound],
         "outbounds": [
             {
                 "type": "vless",
@@ -67,8 +94,7 @@ def build_singbox_config(server: dict) -> dict:
             {"type": "direct", "tag": "direct"},
         ],
         "route": {
-            # DNS-пакеты, попавшие в туннель, отвечаются локально через dns-модуль
-            "rules": [{"protocol": "dns", "action": "hijack-dns"}],
+            "rules": route_rules,
             "final": "proxy",
             "auto_detect_interface": True,
         },

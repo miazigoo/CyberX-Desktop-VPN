@@ -1,8 +1,8 @@
 [Desktop Entry]
 Type=Application
 Name=CyberX VPN
-Comment=VPN клиент (VLESS+Reality, xray-core)
-Exec=/home/b00bs/my_less/desctop_vpn/run.sh
-Icon=network-vpn
+Comment=VPN клиент (VLESS+Reality, sing-box TUN)
+Exec=__EXEC__
+Icon=cyberx-vpn
 Terminal=false
 Categories=Network;

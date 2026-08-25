@@ -1,6 +1,6 @@
 #!/bin/bash
 # Root-хелпер CyberX VPN: подъём/остановка TUN-режима.
-# Вызывается через pkexec из GUI. Делает только: запуск/останов sing-box
+# Вызывается от root из GUI (sudo или pkexec). Делает только: запуск/останов sing-box
 # и подмену/восстановление /etc/resolv.conf.
 set -u
 
