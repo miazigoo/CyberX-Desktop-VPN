@@ -1,4 +1,4 @@
-"""QSS-стиль приложения в фирменной тёмной теме CyberX (как Android-клиент)."""
+"""Тёмная тема CyberX для десктопного клиента."""
 
 STYLE = """
 QMainWindow, QWidget {
@@ -7,83 +7,67 @@ QMainWindow, QWidget {
     font-family: "Inter", "Segoe UI", "Noto Sans", sans-serif;
     font-size: 14px;
 }
-QLabel#brand {
-    font-size: 30px;
-    font-weight: 700;
-    color: #FFFFFF;
+QLabel, QCheckBox { background: transparent; }
+QLabel#brand { font-size: 26px; font-weight: 700; color: white; }
+QLabel#panelTitle { color: #E7F0FF; font-size: 14px; font-weight: 600; }
+QLabel#status { color: #E7F0FF; font-size: 15px; font-weight: 600; }
+QLabel#hint { color: #A4B6D1; font-size: 13px; }
+QTabWidget::pane {
+    background: #101B2D;
+    border: none;
+    border-top: 1px solid #32425D;
 }
-QLabel#tagline { color: #8EA4C8; font-size: 13px; }
-QLabel#panelTitle { color: #8EA4C8; font-size: 13px; }
-QLabel#status { color: #E7F0FF; font-size: 15px; }
-QLabel#hint { color: #7F94B6; font-size: 12px; }
-QFrame#glass {
-    background: rgba(16, 24, 39, 0.80);
-    border: 1px solid rgba(69, 224, 181, 0.20);
-    border-radius: 18px;
+QWidget#page { background: #101B2D; }
+QTabBar::tab {
+    background: transparent;
+    color: #ADBCD3;
+    padding: 9px 15px;
+    border-bottom: 2px solid transparent;
 }
-QLineEdit {
-    background: rgba(19, 29, 46, 0.55);
-    border: 1px solid rgba(95, 123, 168, 0.25);
-    border-radius: 12px;
-    padding: 9px 12px;
-    color: #FFFFFF;
-    selection-background-color: #1677FF;
+QTabBar::tab:selected { color: white; border-bottom-color: #70ABFF; }
+QTabBar::tab:hover { color: white; }
+QLineEdit, QPlainTextEdit {
+    background: #0C1524;
+    border: 1px solid #40516B;
+    border-radius: 8px;
+    padding: 8px 10px;
+    selection-background-color: #2165BE;
 }
-QLineEdit:focus { border: 1px solid #1677FF; }
+QLineEdit:focus, QPlainTextEdit:focus, QPushButton:focus, QListWidget:focus {
+    border: 1px solid #80B2FF;
+}
 QPushButton {
-    background: rgba(255, 255, 255, 0.10);
-    border: 1px solid rgba(95, 123, 168, 0.25);
-    border-radius: 12px;
-    padding: 9px 16px;
-    color: #E7F0FF;
+    background: #29466C;
+    border: 1px solid #426590;
+    border-radius: 8px;
+    padding: 8px 14px;
+    color: white;
     font-weight: 600;
 }
-QPushButton:hover { background: rgba(255, 255, 255, 0.16); }
-QPushButton:pressed { background: rgba(255, 255, 255, 0.07); }
-QPushButton:disabled { color: #4A5B76; background: rgba(255,255,255,0.04); }
-QPushButton#refreshBtn { font-size: 18px; padding: 6px 12px; border-radius: 12px; }
-QListWidget {
-    background: transparent;
-    border: none;
-    outline: none;
-}
+QPushButton:hover { background: #365A89; }
+QPushButton:pressed { background: #203857; }
+QPushButton:disabled { color: #9CAFC9; background: #213048; border-color: #304059; }
+QListWidget { background: transparent; border: 1px solid transparent; }
 QListWidget::item {
-    background: rgba(255, 255, 255, 0.05);
-    border: 1px solid rgba(95, 123, 168, 0.18);
-    border-radius: 10px;
-    padding: 11px 12px;
-    margin: 3px 0px;
-    color: #E7F0FF;
+    background: #18263B;
+    border: 1px solid #2A3B54;
+    border-radius: 8px;
+    padding: 9px 10px;
+    margin: 2px 0;
 }
-QListWidget::item:hover { background: rgba(255, 255, 255, 0.10); }
-QListWidget::item:selected {
-    background: rgba(22, 119, 255, 0.28);
-    border: 1px solid #1677FF;
-    color: #FFFFFF;
+QListWidget::item:hover { background: #20334F; }
+QListWidget::item:selected { background: #1D3960; border-color: #629BF1; color: white; }
+QScrollBar:vertical { width: 8px; background: transparent; margin: 2px; }
+QScrollBar::handle:vertical { background: #4B5D77; min-height: 20px; }
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
+QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {
+    background: transparent;
 }
-QPlainTextEdit {
-    background: #070D18;
-    border: 1px solid #16233A;
-    border-radius: 10px;
-    color: #5F7394;
-    font-family: "JetBrains Mono", "DejaVu Sans Mono", monospace;
-    font-size: 11px;
-    padding: 6px;
+QPlainTextEdit#log {
+    font-family: "DejaVu Sans Mono", monospace;
+    font-size: 12px;
+    color: #B6C9E6;
 }
-QCheckBox {
-    color: #E7F0FF;
-    spacing: 8px;
-}
-QCheckBox::indicator {
-    width: 18px;
-    height: 18px;
-    border-radius: 5px;
-    border: 1px solid rgba(95, 123, 168, 0.45);
-    background: rgba(19, 29, 46, 0.55);
-}
-QCheckBox::indicator:checked {
-    background: #1677FF;
-    border-color: #1677FF;
-}
-QToolTip { background: #131D2E; color: #E7F0FF; border: 1px solid #335F7BA8; }
+QCheckBox { spacing: 8px; }
+QToolTip { background: #131D2E; color: #E7F0FF; border: 1px solid #40516B; }
 """

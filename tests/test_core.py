@@ -1,6 +1,9 @@
 """Тесты ядра: парсинг vless и генерация конфига sing-box (без GUI и сети)."""
 
 import base64
+from io import BytesIO
+
+import pytest
 
 from cyberx_vpn.configgen import (
     ROUTE_EXCLUDE,
@@ -8,12 +11,12 @@ from cyberx_vpn.configgen import (
     build_singbox_config,
 )
 from cyberx_vpn.routing import build_bypass_route_rule, parse_bypass_list
-from cyberx_vpn.subscription import parse_vless
+from cyberx_vpn.subscription import fetch_subscription, parse_vless
 
 VLESS = (
-    "vless://c3804846-fcf9-438d-a22f-934629b27bd2@144.31.186.100:443"
-    "?security=reality&type=tcp&flow=xtls-rprx-vision&sni=ya.ru&fp=chrome"
-    "&pbk=XyXna691nvnWIbwvwPbYMDNZ__5GVfQKU_kc8IPoGTI&sid=a3f8c1d2"
+    "vless://00000000-0000-4000-8000-000000000001@192.0.2.1:443"
+    "?security=reality&type=tcp&flow=xtls-rprx-vision&sni=example.org&fp=chrome"
+    "&pbk=AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA&sid=aabbccdd"
     "#%D0%A2%D0%B5%D1%81%D1%82"
 )
 
@@ -21,11 +24,11 @@ VLESS = (
 def test_parse_vless_fields():
     """Все ключевые поля vless-ссылки извлекаются корректно."""
     s = parse_vless(VLESS)
-    assert s["host"] == "144.31.186.100"
+    assert s["host"] == "192.0.2.1"
     assert s["port"] == 443
-    assert s["uuid"] == "c3804846-fcf9-438d-a22f-934629b27bd2"
+    assert s["uuid"] == "00000000-0000-4000-8000-000000000001"
     assert s["security"] == "reality"
-    assert s["sni"] == "ya.ru"
+    assert s["sni"] == "example.org"
     assert s["flow"] == "xtls-rprx-vision"
     assert s["name"] == "Тест"
 
@@ -42,9 +45,9 @@ def test_singbox_config_structure():
 
     out = cfg["outbounds"][0]
     assert out["type"] == "vless"
-    assert out["server"] == "144.31.186.100"
-    assert out["tls"]["reality"]["public_key"].startswith("XyXna691")
-    assert out["tls"]["server_name"] == "ya.ru"
+    assert out["server"] == "192.0.2.1"
+    assert out["tls"]["reality"]["public_key"].startswith("AQIDBAUG")
+    assert out["tls"]["server_name"] == "example.org"
 
     assert {"protocol": "dns", "action": "hijack-dns"} in cfg["route"]["rules"]
     assert len(cfg["dns"]["servers"]) == 2
@@ -100,11 +103,17 @@ def test_build_bypass_route_rule():
     assert rule == {"outbound": "direct", "domain_suffix": ["ok.ru"]}
 
 
-def test_subscription_body_decoding():
-    """base64-тело подписки без padding декодируется в список ссылок."""
-    body = "\n".join([VLESS, VLESS]).encode()
-    tok = base64.b64encode(body).rstrip(b"=")
-    raw = tok + b"=" * (-len(tok) % 4)
-    text = base64.b64decode(raw).decode()
-    links = [ln for ln in text.splitlines() if ln.startswith("vless://")]
-    assert len(links) == 2
+@pytest.mark.parametrize("encoded", [False, True])
+def test_fetch_subscription_decodes_server_list(monkeypatch, encoded):
+    body = f"{VLESS}\n{VLESS}\n".encode()
+    response = base64.b64encode(body).rstrip(b"=") if encoded else body
+    monkeypatch.setattr("urllib.request.urlopen", lambda *a, **kw: BytesIO(response))
+    assert fetch_subscription("https://example.org/sub") == [VLESS, VLESS]
+
+
+@pytest.mark.parametrize(
+    "link", ["vless://host", "vless://user@:443", "vless://user@host:invalid"]
+)
+def test_parse_vless_rejects_incomplete_server(link):
+    with pytest.raises(ValueError):
+        parse_vless(link)

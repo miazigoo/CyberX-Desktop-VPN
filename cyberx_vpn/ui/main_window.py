@@ -1,13 +1,15 @@
-"""Главное окно CyberX VPN: список серверов, кнопка GO, управление туннелем."""
+"""Главное окно CyberX VPN: серверы подписки, управление туннелем."""
 
 import json
 import os
+import tempfile
+from pathlib import Path
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QIcon, QPixmap
 from PySide6.QtWidgets import (
+    QApplication,
     QCheckBox,
-    QFrame,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -15,10 +17,10 @@ from PySide6.QtWidgets import (
     QListWidgetItem,
     QMainWindow,
     QMenu,
-    QMessageBox,
     QPlainTextEdit,
     QPushButton,
     QSystemTrayIcon,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -29,8 +31,6 @@ from ..subscription import fetch_subscription, parse_vless
 from ..tunnel import TunManager
 from .connect_button import ConnectButton
 from .worker import Worker
-
-DEFAULT_SUB_URL = "https://sub.cyberx-net.org/sub/Rm9yX1Bhc2hhLDE3ODMzMjk1NjIzw7t7mjugn"
 
 
 class MainWindow(QMainWindow):
@@ -45,7 +45,7 @@ class MainWindow(QMainWindow):
         logo_256 = os.path.join(app_dir, "assets", "cyberx_mark_256.png")
 
         self.setWindowTitle("CyberX VPN")
-        self.resize(480, 880)
+        self.resize(480, 620)
         self._icon = QIcon(logo_256) if os.path.isfile(logo_256) else QIcon()
         if not self._icon.isNull():
             self.setWindowIcon(self._icon)
@@ -59,8 +59,10 @@ class MainWindow(QMainWindow):
         self.servers: list[dict] = []
         self.current: dict | None = None
         self.connected = False
-        self.connecting = False
+        self._operation: str | None = None
+        self._ip_request = None
         self.settings = self._load_settings()
+        self._fetching = False
         self._workers: list = []
 
         root = QWidget()
@@ -69,83 +71,70 @@ class MainWindow(QMainWindow):
         lay.setContentsMargins(22, 20, 22, 14)
         lay.setSpacing(10)
 
-        # шапка: логотип + бренд + кнопка обновления подписки
         head = QHBoxLayout()
         if os.path.isfile(logo_48):
             logo = QLabel()
             logo.setPixmap(QPixmap(logo_48))
             head.addWidget(logo)
-        brand_box = QVBoxLayout()
-        brand_box.setSpacing(0)
-        brand = QLabel("CyberX")
+        brand = QLabel("CyberX VPN")
         brand.setObjectName("brand")
-        tagline = QLabel("Private network access")
-        tagline.setObjectName("tagline")
-        brand_box.addWidget(brand)
-        brand_box.addWidget(tagline)
-        head.addLayout(brand_box, 1)
-        self.fetch_btn = QPushButton("⟳")
-        self.fetch_btn.setObjectName("refreshBtn")
-        self.fetch_btn.setToolTip("Обновить подписку")
-        self.fetch_btn.clicked.connect(self.on_fetch)
-        head.addWidget(self.fetch_btn, 0, Qt.AlignVCenter)
+        head.addWidget(brand)
+        head.addStretch()
         lay.addLayout(head)
 
-        lay.addSpacing(6)
-
-        # круглая кнопка подключения по центру
-        btn_row = QHBoxLayout()
         self.connect_btn = ConnectButton()
         self.connect_btn.clicked.connect(self.on_go_clicked)
-        btn_row.addStretch(1)
-        btn_row.addWidget(self.connect_btn)
-        btn_row.addStretch(1)
-        lay.addLayout(btn_row)
-
-        self.status_lbl = QLabel("Загрузка серверов...")
+        lay.addWidget(self.connect_btn, 0, Qt.AlignCenter)
+        self.status_lbl = QLabel("VPN отключён")
         self.status_lbl.setObjectName("status")
+        self.status_lbl.setTextFormat(Qt.PlainText)
+        self.status_lbl.setWordWrap(True)
         self.status_lbl.setAlignment(Qt.AlignCenter)
         lay.addWidget(self.status_lbl)
 
-        # «стеклянная» панель со списком серверов и ссылкой подписки
-        panel = QFrame()
-        panel.setObjectName("glass")
+        tabs = QTabWidget()
+        lay.addWidget(tabs, 1)
+        panel = QWidget()
+        panel.setObjectName("page")
+        tabs.addTab(panel, "Серверы")
         p_lay = QVBoxLayout(panel)
-        p_lay.setContentsMargins(16, 14, 16, 14)
+        p_lay.setContentsMargins(16, 16, 16, 12)
         p_lay.setSpacing(8)
-        p_title = QLabel("Маршрут подключения")
-        p_title.setObjectName("panelTitle")
-        p_lay.addWidget(p_title)
 
-        self.list = QListWidget()
-        self.list.itemDoubleClicked.connect(lambda _i: self.on_go_clicked())
-        p_lay.addWidget(self.list, 1)
-
+        url_lbl = QLabel("Ссылка подписки")
+        url_lbl.setObjectName("panelTitle")
+        p_lay.addWidget(url_lbl)
         url_row = QHBoxLayout()
-        url_row.setSpacing(8)
-        self.url_edit = QLineEdit(self.settings.get("sub_url", DEFAULT_SUB_URL))
-        self.url_edit.setPlaceholderText("Ссылка подписки https://...")
-        self.update_btn = QPushButton("Обновить")
+        self.url_edit = QLineEdit(self.settings.get("sub_url", ""))
+        self.url_edit.setPlaceholderText("https://…")
+        self.url_edit.setAccessibleName(url_lbl.text())
+        self.url_edit.returnPressed.connect(self.on_fetch)
+        self.url_edit.textChanged.connect(self._subscription_edited)
+        self.update_btn = QPushButton("Загрузить")
         self.update_btn.clicked.connect(self.on_fetch)
         url_row.addWidget(self.url_edit, 1)
         url_row.addWidget(self.update_btn)
         p_lay.addLayout(url_row)
 
-        hint = QLabel("Выберите сервер в списке и нажмите GO")
-        hint.setObjectName("hint")
-        hint.setAlignment(Qt.AlignCenter)
-        p_lay.addWidget(hint)
-        lay.addWidget(panel, 1)
+        self.sub_status = QLabel(
+            "Введите ссылку от провайдера, чтобы загрузить серверы."
+        )
+        self.sub_status.setObjectName("hint")
+        self.sub_status.setTextFormat(Qt.PlainText)
+        self.sub_status.setWordWrap(True)
+        p_lay.addWidget(self.sub_status)
+        self.list = QListWidget()
+        self.list.setAccessibleName("Серверы подписки")
+        self.list.currentRowChanged.connect(self._sync_controls)
+        self.list.itemActivated.connect(self._connect_selected)
+        p_lay.addWidget(self.list, 1)
 
-        exc_panel = QFrame()
-        exc_panel.setObjectName("glass")
+        exc_panel = QWidget()
+        exc_panel.setObjectName("page")
+        tabs.addTab(exc_panel, "Исключения")
         exc_lay = QVBoxLayout(exc_panel)
-        exc_lay.setContentsMargins(16, 14, 16, 14)
+        exc_lay.setContentsMargins(16, 16, 16, 12)
         exc_lay.setSpacing(8)
-        exc_title = QLabel("Исключения")
-        exc_title.setObjectName("panelTitle")
-        exc_lay.addWidget(exc_title)
-
         self.exclude_lan_cb = QCheckBox("Локальная сеть без VPN")
         self.exclude_lan_cb.setToolTip(
             "192.168.x, 10.x, docker-сети и другие частные адреса идут напрямую"
@@ -155,43 +144,43 @@ class MainWindow(QMainWindow):
 
         bypass_lbl = QLabel("Сайты без VPN (домен, URL или IP — по одному в строке)")
         bypass_lbl.setObjectName("hint")
+        bypass_lbl.setWordWrap(True)
         exc_lay.addWidget(bypass_lbl)
 
         self.bypass_edit = QPlainTextEdit()
-        self.bypass_edit.setPlaceholderText(
-            "youtube.com\nhttps://example.com/path\n2ip.ru\n# комментарии через #"
-        )
+        self.bypass_edit.setPlaceholderText("example.com\n192.168.1.10")
         saved_bypass = self.settings.get("bypass", [])
         if isinstance(saved_bypass, list):
             self.bypass_edit.setPlainText("\n".join(saved_bypass))
         else:
             self.bypass_edit.setPlainText(str(saved_bypass))
-        self.bypass_edit.setFixedHeight(72)
+        self.bypass_edit.setAccessibleName(bypass_lbl.text())
         exc_lay.addWidget(self.bypass_edit)
 
         exc_hint = QLabel("Применяется при следующем подключении")
         exc_hint.setObjectName("hint")
-        exc_hint.setAlignment(Qt.AlignCenter)
         exc_lay.addWidget(exc_hint)
-        lay.addWidget(exc_panel)
 
         self.log = QPlainTextEdit()
         self.log.setReadOnly(True)
         self.log.setMaximumBlockCount(500)
-        self.log.setFixedHeight(84)
-        lay.addWidget(self.log)
+        self.log.setObjectName("log")
+        self.log.setAccessibleName("Журнал подключений")
+        tabs.addTab(self.log, "Журнал")
 
         # если туннель остался поднят с прошлого запуска — показываем это
         if self.tun.is_running():
             self.connected = True
-            self.connect_btn.set_connected(True)
             self.status_lbl.setText("Подключено (туннель поднят ранее)")
             self.log_msg("Обнаружен поднятый ранее TUN-интерфейс")
-            self._run_worker(check_ip, on_done=self._ip_ok, on_fail=lambda e: None)
+            self._check_ip()
 
         self._setup_tray()
-        self._tray_update()
-        self.on_fetch()
+        self._sync_controls()
+        if self.url_edit.text().strip():
+            self.on_fetch()
+        else:
+            self.url_edit.setFocus()
 
     # --- трей ---
 
@@ -205,7 +194,7 @@ class MainWindow(QMainWindow):
             self.tray = None
             return
         self.tray = QSystemTrayIcon(self._icon, self)
-        menu = QMenu()
+        menu = QMenu(self)
         self.tray_status_action = menu.addAction("Не подключено")
         self.tray_status_action.setEnabled(False)
         menu.addSeparator()
@@ -220,12 +209,15 @@ class MainWindow(QMainWindow):
         self.tray.activated.connect(self._tray_activated)
         self.tray.show()
 
-    def _tray_update(self):
-        """Синхронизирует tooltip и пункты меню трея с текущим состоянием."""
+    def _sync_controls(self):
+        """Обновляет действия окна и трея при смене состояния или сервера."""
+        available = self.connected or self.list.currentRow() >= 0
+        self.connect_btn.set_state(self.connected, self._operation, available)
+        self.update_btn.setEnabled(not self._fetching and not self._operation)
         if not self.tray:
             return
-        if self.connecting:
-            state = "Подключение..."
+        if self._operation:
+            state = self._operation
         elif self.connected:
             name = self.current["name"] if self.current else "туннель"
             state = f"Подключено: {name}"
@@ -236,7 +228,7 @@ class MainWindow(QMainWindow):
         self.tray_toggle_action.setText(
             "Отключиться" if self.connected else "Подключиться"
         )
-        self.tray_toggle_action.setEnabled(not self.connecting)
+        self.tray_toggle_action.setEnabled(self.connect_btn.isEnabled())
 
     def _tray_show_window(self):
         """Показывает и поднимает главное окно из трея."""
@@ -259,8 +251,10 @@ class MainWindow(QMainWindow):
     def _load_settings(self) -> dict:
         """Читает settings.json; при любой проблеме возвращает {}."""
         try:
-            return json.load(open(self.settings_file, encoding="utf-8"))
-        except Exception:
+            with open(self.settings_file, encoding="utf-8") as settings_file:
+                settings = json.load(settings_file)
+            return settings if isinstance(settings, dict) else {}
+        except (OSError, ValueError):
             return {}
 
     def _routing_settings(self) -> dict:
@@ -275,14 +269,19 @@ class MainWindow(QMainWindow):
         self.settings["sub_url"] = self.url_edit.text().strip()
         self.settings["exclude_lan"] = self.exclude_lan_cb.isChecked()
         self.settings["bypass"] = parse_bypass_list(self.bypass_edit.toPlainText())
+        pending = None
         try:
-            json.dump(
-                self.settings,
-                open(self.settings_file, "w", encoding="utf-8"),
-                indent=2,
-            )
-        except Exception:
-            pass
+            with tempfile.NamedTemporaryFile(
+                mode="w", dir=self.app_dir, delete=False, encoding="utf-8"
+            ) as temp:
+                pending = Path(temp.name)
+                json.dump(self.settings, temp, indent=2)
+            pending.replace(self.settings_file)
+        except OSError as error:
+            self.log_msg(f"Не удалось сохранить настройки: {error}")
+        finally:
+            if pending is not None:
+                pending.unlink(missing_ok=True)
 
     def log_msg(self, msg: str):
         """Добавляет строку в журнал окна."""
@@ -294,7 +293,14 @@ class MainWindow(QMainWindow):
         if on_done:
             w.done.connect(on_done)
         w.failed.connect(on_fail or (lambda e: self._err(e)))
-        w.finished.connect(lambda: self._workers.remove(w))
+
+        def finished():
+            self._workers.remove(w)
+            w.deleteLater()
+            if self._quitting and not self._workers:
+                self.close()
+
+        w.finished.connect(finished)
         self._workers.append(w)
         w.start()
 
@@ -305,46 +311,86 @@ class MainWindow(QMainWindow):
 
     # --- действия ---
 
+    def _subscription_edited(self, url):
+        """Убирает серверы прежней подписки, когда пользователь меняет её адрес."""
+        self.list.clear()
+        self.servers = []
+        if url.strip():
+            self.sub_status.setText(
+                "Нажмите «Загрузить», чтобы получить список серверов."
+            )
+        else:
+            self.sub_status.setText(
+                "Введите ссылку от провайдера, чтобы загрузить серверы."
+            )
+
     def on_fetch(self):
         """Загружает подписку и пересобирает список серверов."""
-        if self.connecting:
+        if self._operation or self._fetching or self._quitting:
             return
         url = self.url_edit.text().strip()
         if not url.startswith(("http://", "https://")):
-            QMessageBox.warning(self, "CyberX VPN", "Нужна http/https ссылка подписки")
+            self.sub_status.setText(
+                "Введите ссылку, начинающуюся с https:// или http://."
+            )
+            self.url_edit.setFocus()
             return
         self._save_settings()
-        self.fetch_btn.setEnabled(False)
-        self.update_btn.setEnabled(False)
-        self.status_lbl.setText("Загружаю серверы...")
+        self._fetching = True
+        self.url_edit.setReadOnly(True)
+        self._sync_controls()
+        self.sub_status.setText("Загружаем серверы…")
 
-        def done(links):
-            self.fetch_btn.setEnabled(True)
-            self.update_btn.setEnabled(True)
-            self.servers = [parse_vless(ln) for ln in links]
+        def load():
+            servers = []
+            for link in fetch_subscription(url):
+                try:
+                    servers.append(parse_vless(link))
+                except ValueError:
+                    continue
+            return servers
+
+        def end_fetch():
+            self._fetching = False
+            self.url_edit.setReadOnly(False)
+            self._sync_controls()
+
+        def done(servers):
+            row = self.list.currentRow()
+            previous = self.servers[row]["raw"] if row >= 0 else None
+            self.servers = servers
             self.list.clear()
-            for s in self.servers:
-                QListWidgetItem(
-                    f"{s['name']}    ·    {s['host']}:{s['port']}", self.list
-                )
-            if self.list.count():
-                self.list.setCurrentRow(0)
-            if not self.connected:
-                self.status_lbl.setText(
-                    f"Серверов: {len(self.servers)}. Готов к подключению"
-                )
-            self.log_msg(f"Подписка загружена, серверов: {len(self.servers)}")
+            selected = 0
+            for i, server in enumerate(servers):
+                if server["raw"] == previous:
+                    selected = i
+                name, host, port = server["name"], server["host"], server["port"]
+                QListWidgetItem(f"{name}   ·   {host}:{port}", self.list)
+            if servers:
+                self.list.setCurrentRow(selected)
+                message = f"Доступные серверы · {len(servers)}"
+            else:
+                message = "В подписке нет доступных VLESS-серверов. Проверьте ссылку."
+            self.sub_status.setText(message)
+            self.log_msg(message)
+            end_fetch()
 
-        def fail(e):
-            self.fetch_btn.setEnabled(True)
-            self.update_btn.setEnabled(True)
-            self._err(e)
+        def fail(error):
+            self.sub_status.setText(
+                "Не удалось загрузить серверы. Подробнее в журнале."
+            )
+            self.log_msg(f"Ошибка загрузки подписки: {error}")
+            end_fetch()
 
-        self._run_worker(fetch_subscription, url, on_done=done, on_fail=fail)
+        self._run_worker(load, on_done=done, on_fail=fail)
+
+    def _connect_selected(self):
+        if not self.connected and not self._operation and not self._quitting:
+            self._do_connect()
 
     def on_go_clicked(self):
-        """Обрабатывает нажатие GO/ON: подключиться или отключиться."""
-        if self.connecting:
+        """Обрабатывает нажатие кнопки подключения: подключиться или отключиться."""
+        if self._operation or self._quitting:
             return
         if self.connected:
             self._do_disconnect()
@@ -360,28 +406,28 @@ class MainWindow(QMainWindow):
         server = self.servers[row]
         self.current = server
         self._save_settings()
-        self.connecting = True
-        self.connect_btn.set_connecting(True)
-        self._tray_update()
+        self._operation = "Подключение…"
+        self._sync_controls()
         self.status_lbl.setText(f"Подключение: {server['name']}…")
         self.log_msg(
             f"Поднимаю туннель → {server['name']} ({server['host']}:{server['port']})"
         )
+        routing = self._routing_settings()
         self._run_worker(
-            lambda: self.tun.start(server, self._routing_settings()),
-            on_done=self._tun_up,
+            self.tun.start,
+            server,
+            routing,
+            on_done=lambda msg: self._tun_up(msg, routing),
             on_fail=self._tun_fail,
         )
 
-    def _tun_up(self, msg):
+    def _tun_up(self, msg, routing):
         """Завершает подключение: зелёная кнопка, проверка внешнего IP."""
-        self.connecting = False
+        self._operation = None
         self.connected = True
-        self.connect_btn.set_connecting(False)
-        self.connect_btn.set_connected(True)
-        self._tray_update()
+        self._sync_controls()
+        self.status_lbl.setText(f"Подключено · {self.current['name']}")
         self.log_msg(f"sing-box: {msg}")
-        routing = self._routing_settings()
         parts = []
         if routing["exclude_lan"]:
             parts.append("LAN/docker без VPN")
@@ -392,45 +438,65 @@ class MainWindow(QMainWindow):
             self.log_msg("Исключения: " + "; ".join(parts))
         else:
             self.log_msg("Весь трафик через туннель (исключений нет)")
-        self._run_worker(
-            check_ip,
-            on_done=self._ip_ok,
-            on_fail=lambda e: self._err(f"Туннель поднят, но трафик не идёт: {e}"),
-        )
+        if self._quitting:
+            self._do_disconnect()
+        else:
+            self._check_ip()
+
+    def _check_ip(self):
+        """Применяет результат проверки IP только для текущего подключения."""
+        request = object()
+        self._ip_request = request
+
+        def done(info):
+            if self._ip_request is request:
+                name = self.current["name"] if self.current else "туннель"
+                self.status_lbl.setText(f"{name}  ·  IP: {info}")
+                self.log_msg(f"Внешний IP через VPN: {info}")
+
+        def fail(error):
+            if self._ip_request is request:
+                self.log_msg(f"Не удалось проверить внешний IP: {error}")
+
+        self._run_worker(check_ip, on_done=done, on_fail=fail)
 
     def _tun_fail(self, e):
         """Откатывает UI в исходное состояние при неудачном подключении."""
-        self.connecting = False
-        self.connected = False
-        self.connect_btn.set_connecting(False)
-        self._tray_update()
-        self._err(e)
-
-    def _ip_ok(self, info):
-        """Показывает внешний IP, полученный через туннель."""
-        name = self.current["name"] if self.current else "туннель"
-        self.status_lbl.setText(f"{name}  ·  IP: {info}")
-        self.log_msg(f"Внешний IP через VPN: {info}")
-
-    def _do_disconnect(self):
-        """Останавливает туннель и возвращает UI в состояние «отключено»."""
-        try:
-            msg = self.tun.stop()
-            self.log_msg(f"sing-box: {msg}; маршруты и DNS восстановлены")
-        except Exception as e:
-            self._err(str(e))
+        self._operation = None
         self.connected = False
         self.current = None
-        self.connect_btn.set_connected(False)
-        self._tray_update()
-        self.status_lbl.setText("Не подключено. Готов к подключению")
+        self._sync_controls()
+        self._err(e)
+
+    def _do_disconnect(self):
+        """Останавливает туннель в фоне, пока пользователь отвечает на запрос polkit."""
+        self._ip_request = None
+        self._operation = "Отключение…"
+        self._sync_controls()
+        self.status_lbl.setText(self._operation)
+
+        def done(msg):
+            self._operation = None
+            self.connected = False
+            self.current = None
+            self._sync_controls()
+            self.status_lbl.setText("VPN отключён")
+            self.log_msg(f"sing-box: {msg}; маршруты и DNS восстановлены")
+
+        def fail(error):
+            self._operation = None
+            if self._quitting:
+                self._quitting = False
+                self.setEnabled(True)
+                self._tray_show_window()
+            self._sync_controls()
+            self.status_lbl.setText("Не удалось отключить VPN. Подробнее в журнале.")
+            self.log_msg(f"Ошибка отключения: {error}")
+
+        self._run_worker(self.tun.stop, on_done=done, on_fail=fail)
 
     def closeEvent(self, event):
-        """Закрытие окна: сворачивает в трей, а не выходит из приложения.
-
-        Полный выход (с остановкой туннеля) — только при _quitting=True,
-        т.е. через пункт «Выход» в меню трея.
-        """
+        """Сворачивает окно в трей или завершает фоновые задачи и останавливает VPN."""
         self._save_settings()
         if self.tray and not self._quitting:
             event.ignore()
@@ -439,14 +505,19 @@ class MainWindow(QMainWindow):
                 self._tray_hint_shown = True
                 self.tray.showMessage(
                     "CyberX VPN",
-                    "Приложение свёрнуто в трей. Туннель продолжает работать.",
+                    "Открыть приложение и выйти можно через меню значка.",
                     self._icon,
                     4000,
                 )
             return
-        if self.connected:
-            try:
-                self.tun.stop()
-            except Exception:
-                pass
+        self._quitting = True
+        if self.connected and not self._operation:
+            self._do_disconnect()
+        if self._workers:
+            self.setEnabled(False)
+            if not self._operation:
+                self.status_lbl.setText("Завершаем текущую операцию…")
+            event.ignore()
+            return
         event.accept()
+        QApplication.instance().quit()

@@ -1,45 +1,19 @@
 #!/bin/bash
-# Одноразовая настройка прав (запускается от root через pkexec).
+# Устанавливает фиксированные исполняемые файлы для запуска через polkit.
 set -euo pipefail
+root_dir="$(cd "$(dirname "$0")/.." && pwd)"
+system_dir=/usr/local/lib/cyberx-vpn
+engine="${1:-$root_dir/sing-box}"
+[[ -f "$engine" ]] || { echo "Не найден sing-box: $engine" >&2; exit 1; }
 
-if [ "$(id -u)" -ne 0 ]; then
-    echo "ERROR: нужен root" >&2
+if ip link show cyberx0 >/dev/null 2>&1; then
+    echo "Отключите CyberX VPN перед обновлением системного помощника." >&2
     exit 1
 fi
 
-ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-HELPER="$(readlink -f "$ROOT/helper.sh")"
-INSTALL_DIR="${INSTALL_DIR:-$HOME/apps/cyberx-vpn}"
-USER="${PKEXEC_UID:+$(id -nu "$PKEXEC_UID")}"
-USER="${USER:-${SUDO_USER:-$(logname 2>/dev/null || whoami)}}"
-SUDOERS="/etc/sudoers.d/cyberx-vpn"
-
-[ -x "$HELPER" ] || { echo "ERROR: нет $HELPER" >&2; exit 1; }
-
-tmp="$(mktemp)"
-cat >"$tmp" <<EOF
-# CyberX VPN — passwordless helper for $USER
-$USER ALL=(root) NOPASSWD: $HELPER up
-$USER ALL=(root) NOPASSWD: $HELPER down
-$USER ALL=(root) NOPASSWD: $HELPER status
-EOF
-
-if [ -e "$INSTALL_DIR/helper.sh" ]; then
-    apps_helper="$(readlink -f "$INSTALL_DIR/helper.sh")"
-    if [ "$apps_helper" != "$HELPER" ]; then
-        cat >>"$tmp" <<EOF
-$USER ALL=(root) NOPASSWD: $INSTALL_DIR/helper.sh up
-$USER ALL=(root) NOPASSWD: $INSTALL_DIR/helper.sh down
-$USER ALL=(root) NOPASSWD: $INSTALL_DIR/helper.sh status
-EOF
-    fi
-fi
-
-install -m440 "$tmp" "$SUDOERS"
-rm -f "$tmp"
-visudo -cf "$SUDOERS"
-
-chown root:root "$HELPER" "$ROOT/sing-box"
-chmod 755 "$HELPER" "$ROOT/sing-box"
-
-echo "OK: passwordless sudo для CyberX VPN настроен"
+echo "Для установки помощника в $system_dir нужен sudo."
+sudo install -d -o root -g root -m755 "$system_dir"
+sudo install -o root -g root -m755 "$engine" "$system_dir/sing-box"
+sudo install -o root -g root -m755 "$root_dir/helper.sh" "$system_dir/helper.sh"
+# Ранее это правило разрешало запуск скрипта из домашнего каталога от root.
+sudo rm -f /etc/sudoers.d/cyberx-vpn

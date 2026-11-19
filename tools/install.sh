@@ -1,181 +1,97 @@
 #!/bin/bash
-# Установка CyberX VPN: копирование файлов и одноразовая настройка sudo.
-# После установки connect/disconnect работают без повторного ввода пароля.
+# Установка пользовательского приложения и системного помощника TUN.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 INSTALL_DIR="${INSTALL_DIR:-$HOME/apps/cyberx-vpn}"
-SKIP_BUILD=0
-DEV_MODE=0
-SUDOERS_ONLY=0
+mode=bundle
 
 usage() {
-    cat <<EOF
-Использование: $0 [опции]
-
-  --dir PATH        каталог установки (по умолчанию: ~/apps/cyberx-vpn)
-  --dev             установить из исходников (без PyInstaller)
-  --skip-build      не собирать бандл, использовать dist/cyberx-vpn
-  --sudoers-only    только настроить sudo (helper уже на месте)
-  -h, --help        эта справка
-
-При установке один раз запрашивается пароль sudo — дальше VPN
-включается и выключается без повторных запросов.
-EOF
+    cat <<HELP
+Использование: $0 [--dir PATH] [--dev | --skip-build]
+  --dir PATH     каталог приложения (по умолчанию ~/apps/cyberx-vpn)
+  --dev          запускать GUI из этого клона через run.sh
+  --skip-build   установить готовый dist/cyberx-vpn
+HELP
 }
 
-while [ $# -gt 0 ]; do
+while (($#)); do
     case "$1" in
-        --dir)
-            INSTALL_DIR="$2"
-            shift 2
-            ;;
-        --dev)
-            DEV_MODE=1
-            shift
-            ;;
-        --skip-build)
-            SKIP_BUILD=1
-            shift
-            ;;
-        --sudoers-only)
-            SUDOERS_ONLY=1
-            shift
-            ;;
-        -h | --help)
-            usage
-            exit 0
-            ;;
-        *)
-            echo "Неизвестный аргумент: $1" >&2
-            usage >&2
-            exit 1
-            ;;
+        --dir) INSTALL_DIR="${2:?Укажите каталог после --dir}"; shift 2 ;;
+        --dev) mode=dev; shift ;;
+        --skip-build) mode=dist; shift ;;
+        -h|--help) usage; exit 0 ;;
+        *) usage >&2; exit 1 ;;
     esac
 done
 
-install_sudoers() {
-    local helper="$1"
-    local user="${SUDO_USER:-$(whoami)}"
-    local tmp sudoers="/etc/sudoers.d/cyberx-vpn"
-
-    if [ ! -x "$helper" ]; then
-        echo "ERROR: helper не найден или не исполняемый: $helper" >&2
-        exit 1
-    fi
-
-    if sudo -n true 2>/dev/null; then
-        tmp="$(mktemp)"
-        cat >"$tmp" <<EOF
-# CyberX VPN — passwordless helper for $user
-# Удаляется через: sudo rm $sudoers
-$user ALL=(root) NOPASSWD: $helper up
-$user ALL=(root) NOPASSWD: $helper down
-$user ALL=(root) NOPASSWD: $helper status
-EOF
-        sudo install -m440 "$tmp" "$sudoers"
-        rm -f "$tmp"
-        sudo visudo -cf "$sudoers"
-        echo "sudoers: $sudoers (пользователь $user, helper $helper)"
-        return
-    fi
-
-    echo "запрос прав через pkexec (один раз)..."
-    pkexec env INSTALL_DIR="$INSTALL_DIR" "$ROOT/tools/setup-privileges.sh"
-}
-
-secure_helper_binaries() {
-    local dir="$1"
-    if sudo -n true 2>/dev/null; then
-        sudo chown root:root "$dir/helper.sh" "$dir/sing-box"
-        sudo chmod 755 "$dir/helper.sh" "$dir/sing-box"
-    fi
-}
-
-install_desktop() {
-    local app_dir="$1"
-    local exec_path="$2"
-    local apps="$HOME/.local/share/applications"
-    local icons="$HOME/.local/share/icons/hicolor/256x256/apps"
-
-    mkdir -p "$apps" "$icons"
-    sed -e "s|__APP_DIR__|$app_dir|g" -e "s|__EXEC__|$exec_path|g" \
-        "$ROOT/CyberXVPN.desktop" >"$apps/cyberx-vpn.desktop"
-    chmod +x "$apps/cyberx-vpn.desktop"
-    if [ -f "$app_dir/assets/cyberx_mark.png" ]; then
-        cp "$app_dir/assets/cyberx_mark.png" "$icons/cyberx-vpn.png"
-    elif [ -f "$ROOT/assets/cyberx_mark.png" ]; then
-        cp "$ROOT/assets/cyberx_mark.png" "$icons/cyberx-vpn.png"
-    fi
-    echo "ярлык: $apps/cyberx-vpn.desktop"
-}
-
-if [ "$SUDOERS_ONLY" = 1 ]; then
-    HELPER="$(readlink -f "$INSTALL_DIR/helper.sh")"
-    install_sudoers "$HELPER"
-    secure_helper_binaries "$INSTALL_DIR"
-    exit 0
+die() { echo "Ошибка: $*" >&2; exit 1; }
+[[ $(id -u) != 0 ]] || die "Запустите установщик от своего пользователя, без sudo."
+[[ $(uname -m) == x86_64 ]] || die "Для этой сборки требуется Ubuntu/Debian x86_64 (amd64)."
+for tool in python3 ip pkexec sudo; do
+    command -v "$tool" >/dev/null || die "Не найдена команда $tool. Установите пакеты из README."
+done
+if ip link show cyberx0 >/dev/null 2>&1; then
+    die "Отключите действующий VPN CyberX и повторите установку."
 fi
 
-mkdir -p "$INSTALL_DIR"
-
-if [ "$DEV_MODE" = 1 ]; then
-    echo "режим разработки: $ROOT"
-    if [ ! -x "$ROOT/sing-box" ]; then
-        echo "скачиваем sing-box..."
-        "$ROOT/tools/fetch_singbox.sh"
+INSTALL_DIR="$(realpath -m -- "$INSTALL_DIR")"
+cd "$ROOT"
+if [[ $mode != dist ]]; then
+    python3 -c 'import sys; sys.exit(sys.version_info < (3, 10))' || die "Нужен Python 3.10 или новее."
+    if [[ ! -x .venv/bin/python ]]; then
+        python3 -m venv .venv || die "Установите python3-venv и повторите запуск."
     fi
-    ln -sf "$ROOT/helper.sh" "$INSTALL_DIR/helper.sh"
-    ln -sf "$ROOT/sing-box" "$INSTALL_DIR/sing-box"
-    cp -r "$ROOT/assets" "$INSTALL_DIR/"
-    cat >"$INSTALL_DIR/run-dev.sh" <<EOF
-#!/bin/bash
-cd "$ROOT" && exec "$ROOT/run.sh"
-EOF
-    chmod +x "$INSTALL_DIR/run-dev.sh"
-    install_desktop "$INSTALL_DIR" "$INSTALL_DIR/run-dev.sh"
-    HELPER="$(readlink -f "$ROOT/helper.sh")"
-    install_sudoers "$HELPER"
-    secure_helper_binaries "$ROOT"
-    echo ""
-    echo "Готово. Запуск: $ROOT/run.sh"
-    exit 0
+    if [[ $mode == dev ]]; then
+        .venv/bin/python -m pip install -e .
+    else
+        .venv/bin/python -m pip install -e '.[bundle]'
+    fi
+    [[ -x sing-box ]] || ./tools/fetch_singbox.sh
 fi
 
-if [ "$SKIP_BUILD" = 0 ]; then
-    if [ ! -x "$ROOT/.venv/bin/pyinstaller" ]; then
-        echo "ERROR: нужен .venv с pyinstaller (см. README)" >&2
-        exit 1
-    fi
-    if [ ! -x "$ROOT/sing-box" ]; then
-        "$ROOT/tools/fetch_singbox.sh"
-    fi
-    echo "сборка PyInstaller..."
-    "$ROOT/.venv/bin/pyinstaller" --noconfirm "$ROOT/cyberx-vpn.spec"
+if [[ $mode == bundle ]]; then
+    .venv/bin/python -m PyInstaller --noconfirm cyberx-vpn.spec
 fi
 
-DIST="$ROOT/dist/cyberx-vpn"
-if [ ! -d "$DIST" ]; then
-    echo "ERROR: нет $DIST — сначала соберите бандл" >&2
-    exit 1
+if [[ $mode == dev ]]; then
+    engine="$ROOT/sing-box"
+    launcher="$ROOT/run.sh"
+else
+    dist="$ROOT/dist/cyberx-vpn"
+    [[ -x "$dist/cyberx-vpn" && -f "$dist/_internal/sing-box" ]] || die "Бандл в dist/cyberx-vpn не собран."
+    case "$INSTALL_DIR/" in
+        "$ROOT/"|"$dist/"*) die "Укажите отдельный каталог для установки приложения." ;;
+    esac
+    mkdir -p "$INSTALL_DIR"
+    [[ -w "$INSTALL_DIR" ]] || die "Нет прав на запись в $INSTALL_DIR."
+    engine="$dist/_internal/sing-box"
+    launcher="$INSTALL_DIR/cyberx-vpn"
 fi
 
-(
-    cd "$DIST"
-    cp -r _internal/helper.sh _internal/sing-box _internal/assets . 2>/dev/null || true
-    chmod +x helper.sh sing-box 2>/dev/null || true
-)
+"$ROOT/tools/setup-privileges.sh" "$engine"
+if [[ $mode != dev ]]; then
+    # Копируем только файлы приложения. Настройки и другие файлы пользователя сохраняются.
+    cp -a -- "$dist/cyberx-vpn" "$dist/_internal" "$INSTALL_DIR/"
+    mkdir -p "$INSTALL_DIR/assets"
+    cp -a -- "$dist/_internal/assets/." "$INSTALL_DIR/assets/"
+fi
 
-echo "копирование в $INSTALL_DIR..."
-rsync -a --delete \
-    --exclude runtime \
-    "$DIST/" "$INSTALL_DIR/"
+data_dir="${XDG_DATA_HOME:-$HOME/.local/share}"
+apps="$data_dir/applications"
+icons="$data_dir/icons/hicolor/256x256/apps"
+mkdir -p "$apps" "$icons"
+install -m644 assets/cyberx_mark_256.png "$icons/cyberx-vpn.png"
+python3 - "$launcher" "$apps/cyberx-vpn.desktop" <<'PY'
+from pathlib import Path
+import sys
 
-install_desktop "$INSTALL_DIR" "$INSTALL_DIR/cyberx-vpn"
-HELPER="$(readlink -f "$INSTALL_DIR/helper.sh")"
-install_sudoers "$HELPER"
-secure_helper_binaries "$INSTALL_DIR"
-
-echo ""
-echo "Готово: $INSTALL_DIR/cyberx-vpn"
-echo "Пароль sudo больше не потребуется при подключении/отключении VPN."
+launcher, target = sys.argv[1:]
+# Exec has its own quoting rules on top of desktop-entry string escaping.
+for char in ('\\', '"', '`', '$'):
+    launcher = launcher.replace(char, '\\' + char)
+launcher = launcher.replace('\\', '\\\\').replace('%', '%%')
+template = Path('CyberXVPN.desktop').read_text()
+Path(target).write_text(template.replace('__EXEC__', f'"{launcher}"'))
+PY
+echo "Готово. Откройте CyberX VPN в меню приложений или запустите: $launcher"

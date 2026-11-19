@@ -1,45 +1,78 @@
 #!/bin/bash
-# Root-хелпер CyberX VPN: подъём/остановка TUN-режима.
-# Вызывается от root из GUI (sudo или pkexec). Делает только: запуск/останов sing-box
-# и подмену/восстановление /etc/resolv.conf.
-set -u
+# Системный помощник. GUI передаёт конфигурацию через stdin при действии up.
+set -euo pipefail
+umask 077
+PATH=/usr/sbin:/usr/bin:/sbin:/bin
+DIR=/usr/local/lib/cyberx-vpn
+ENGINE="$DIR/sing-box"
+STATE=/run/cyberx-vpn
+IF=cyberx0
+die() { echo "Ошибка: $*" >&2; exit 1; }
 
-DIR="$(dirname "$(readlink -f "$0")")"
-RUNTIME="$DIR/runtime"
-PIDFILE="$RUNTIME/sing-box.pid"
-IF="cyberx0"
+[[ $(readlink -f "$0") == "$DIR/helper.sh" ]] || die "Запустите ./tools/install.sh и используйте установленный помощник."
+[[ $(id -u) == 0 ]] || die "Для управления туннелем нужны права администратора."
+install -d -m700 "$STATE"
+exec 9>"$STATE/lock"
+flock -w 15 9 || die "Другая операция с VPN ещё выполняется."
 
-die() { echo "ERROR: $1" >&2; exit 1; }
+owns_process() {
+    [[ -f "$STATE/pid" ]] || return 1
+    read -r pid < "$STATE/pid" || return 1
+    [[ $pid =~ ^[1-9][0-9]*$ && $(readlink "/proc/$pid/exe") == "$ENGINE" ]]
+}
+
+stop_tunnel() {
+    local pid
+    if owns_process; then
+        kill "$pid" || true
+        for ((i=0; i<50; i++)); do
+            owns_process || break
+            sleep 0.1
+        done
+        if owns_process; then
+            die "sing-box всё ещё работает. Проверьте $STATE/sing-box.log."
+        fi
+    fi
+    if [[ -f "$STATE/resolv.conf.bak" ]]; then
+        # Сетевой менеджер мог заменить DNS после подключения.
+        if cmp -s /etc/resolv.conf "$STATE/vpn-resolv.conf"; then
+            cat "$STATE/resolv.conf.bak" > /etc/resolv.conf
+        fi
+        rm -f "$STATE/resolv.conf.bak" "$STATE/vpn-resolv.conf"
+    fi
+    rm -f "$STATE/pid" "$STATE/singbox.json"
+}
 
 case "${1:-}" in
-up)
-    [ -f "$RUNTIME/singbox.json" ] || die "нет $RUNTIME/singbox.json"
-    [ -f "$PIDFILE" ] && kill "$(cat "$PIDFILE")" 2>/dev/null
-    pkill -x sing-box 2>/dev/null
-    sleep 0.5
-    [ -f /etc/resolv.conf ] && [ ! -f "$RUNTIME/resolv.conf.bak" ] && \
-        cp /etc/resolv.conf "$RUNTIME/resolv.conf.bak"
-    nohup "$DIR/sing-box" run -c "$RUNTIME/singbox.json" \
-        > "$RUNTIME/sing-box.log" 2>&1 &
-    echo $! > "$PIDFILE"
-    for _ in $(seq 1 20); do
-        ip link show "$IF" >/dev/null 2>&1 && break
-        sleep 0.5
-    done
-    ip link show "$IF" >/dev/null 2>&1 || die "интерфейс $IF не поднялся, смотрите $RUNTIME/sing-box.log"
-    printf 'nameserver 1.1.1.1\nnameserver 1.0.0.1\n' > /etc/resolv.conf
-    echo "UP $IF"
-    ;;
-down)
-    [ -f "$PIDFILE" ] && kill "$(cat "$PIDFILE")" 2>/dev/null && rm -f "$PIDFILE"
-    pkill -x sing-box 2>/dev/null
-    [ -f "$RUNTIME/resolv.conf.bak" ] && cp "$RUNTIME/resolv.conf.bak" /etc/resolv.conf
-    echo "DOWN"
-    ;;
-status)
-    ip link show "$IF" >/dev/null 2>&1 && echo "UP" || echo "DOWN"
-    ;;
-*)
-    die "использование: helper.sh up|down|status"
-    ;;
+    up)
+        if ip link show "$IF" >/dev/null 2>&1; then
+            die "Интерфейс $IF уже используется."
+        fi
+        stop_tunnel
+        trap 'stop_tunnel' EXIT
+        cat > "$STATE/singbox.json"
+        "$ENGINE" check -c "$STATE/singbox.json" >&2
+        nohup "$ENGINE" run -c "$STATE/singbox.json" </dev/null >"$STATE/sing-box.log" 2>&1 9>&- &
+        echo $! > "$STATE/pid"
+        for ((i=0; i<40; i++)); do
+            ip link show "$IF" >/dev/null 2>&1 && break
+            kill -0 "$!" 2>/dev/null || break
+            sleep 0.25
+        done
+        ip link show "$IF" >/dev/null 2>&1 || die "Интерфейс $IF не поднялся. Подробности: $STATE/sing-box.log."
+        if grep -Eq '^[[:space:]]*nameserver[[:space:]]+127\.0\.0\.(53|54)([[:space:]]|$)' /etc/resolv.conf \
+            && [[ -f /run/systemd/resolve/stub-resolv.conf ]]; then
+            resolvectl dns "$IF" 1.1.1.1 1.0.0.1
+            resolvectl domain "$IF" '~.'
+        else
+            cp -L /etc/resolv.conf "$STATE/resolv.conf.bak"
+            printf 'nameserver 1.1.1.1\nnameserver 1.0.0.1\n' > "$STATE/vpn-resolv.conf"
+            cat "$STATE/vpn-resolv.conf" > /etc/resolv.conf
+        fi
+        trap - EXIT
+        echo "UP $IF"
+        ;;
+    down) stop_tunnel; echo "DOWN" ;;
+    status) if owns_process && ip link show "$IF" >/dev/null 2>&1; then echo "UP"; else echo "DOWN"; fi ;;
+    *) die "Использование: helper.sh up|down|status" ;;
 esac

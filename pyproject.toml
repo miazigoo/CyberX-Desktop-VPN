@@ -1,19 +1,23 @@
 [project]
 name = "cyberx-vpn"
 version = "0.2.0"
-description = "CyberX VPN — десктопный клиент для Debian (PySide6 + sing-box, TUN)"
+description = "CyberX VPN — десктопный клиент для Ubuntu и Debian (PySide6 + sing-box, TUN)"
 requires-python = ">=3.10"
 dependencies = [
-    "PySide6>=6.6",
+    "PySide6-Essentials>=6.6",
 ]
 
 [project.optional-dependencies]
+bundle = ["pyinstaller>=6.0"]
 dev = [
     "ruff>=0.6",
     "pre-commit>=3.5",
     "pytest>=8.0",
     "pyinstaller>=6.0",
 ]
+
+[tool.setuptools.packages.find]
+include = ["cyberx_vpn*"]
 
 [tool.ruff]
 line-length = 88

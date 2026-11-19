@@ -1,18 +1,20 @@
 #!/bin/bash
-# Скачивает sing-box (pinned версия) с GitHub releases рядом с проектом.
-# Бинарник не храним в git — он нужен только для запуска/сборки.
+# Движок для Linux amd64, с проверкой SHA-256 опубликованного архива.
 set -euo pipefail
+VERSION=1.11.15
+SHA256=950af37eb2d7e55dddae34a18411cd617303fd99d2dc75bc76b6dd9fcd97d9c5
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+[[ $(uname -m) == x86_64 ]] || { echo "Требуется x86_64 (amd64)." >&2; exit 1; }
 
-VERSION="1.11.15"
-DIR="$(dirname "$(readlink -f "$0")")/.."
-OUT="$DIR/sing-box"
-TMP="$(mktemp -d)"
-trap 'rm -rf "$TMP"' EXIT
-
-URL="https://github.com/SagerNet/sing-box/releases/download/v${VERSION}/sing-box-${VERSION}-linux-amd64.tar.gz"
-echo "Скачиваю $URL"
-curl -sL --fail --max-time 300 -o "$TMP/sb.tar.gz" "$URL"
-tar -xzf "$TMP/sb.tar.gz" -C "$TMP"
-cp "$TMP/sing-box-${VERSION}-linux-amd64/sing-box" "$OUT"
-chmod +x "$OUT"
-"$OUT" version
+tmp="$(mktemp -d)"
+trap 'rm -rf "$tmp"' EXIT
+archive="sing-box-${VERSION}-linux-amd64"
+url="https://github.com/SagerNet/sing-box/releases/download/v${VERSION}/$archive.tar.gz"
+echo "Скачиваю $url"
+curl -fLsS --retry 2 --max-time 300 -o "$tmp/archive.tar.gz" "$url"
+(cd "$tmp" && echo "$SHA256  archive.tar.gz" | sha256sum --check --status) || {
+    echo "Контрольная сумма sing-box не совпадает." >&2; exit 1;
+}
+tar -xzf "$tmp/archive.tar.gz" -C "$tmp" "$archive/sing-box"
+install -m755 "$tmp/$archive/sing-box" "$ROOT/sing-box"
+"$ROOT/sing-box" version

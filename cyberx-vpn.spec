@@ -4,8 +4,8 @@
 a = Analysis(
     ['main.py'],
     pathex=[],
-    binaries=[('sing-box', '.')],
-    datas=[('helper.sh', '.'), ('assets', 'assets')],
+    binaries=[],
+    datas=[('sing-box', '.'), ('assets', 'assets')],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},

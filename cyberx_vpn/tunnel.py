@@ -9,19 +9,11 @@ from .configgen import TUN_IF, build_singbox_config
 
 
 class TunManager:
-    """Запускает и останавливает sing-box TUN через helper.sh от root.
-
-    GUI работает от пользователя, а подъём интерфейса, маршруты и
-    подмена /etc/resolv.conf требуют root — они вынесены в helper.sh.
-    После `tools/install.sh` вызывается через passwordless sudo;
-    без установки — fallback на pkexec (polkit-запрос пароля).
-    """
+    """Управляет TUN через установленный системный помощник и polkit."""
 
     def __init__(self, app_dir: str):
-        """Запоминает пути до sing-box, helper.sh и каталога runtime."""
-        self.singbox_bin = os.path.join(app_dir, "sing-box")
-        self.helper = os.path.realpath(os.path.join(app_dir, "helper.sh"))
-        self.runtime_dir = os.path.join(app_dir, "runtime")
+        """Принимает каталог GUI для совместимости с существующими клиентами."""
+        self.helper = "/usr/local/lib/cyberx-vpn/helper.sh"
 
     def is_running(self) -> bool:
         """Проверяет, поднят ли TUN-интерфейс (признак активного туннеля)."""
@@ -36,77 +28,67 @@ class TunManager:
         except Exception:
             return False
 
-    def _run_helper(self, cmd: list[str]) -> subprocess.CompletedProcess[str]:
-        return subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=60,
-            check=False,
-        )
-
-    def _helper(self, action: str) -> str:
-        """Вызывает helper.sh от root, возвращает его stdout."""
-        r = self._run_helper(["sudo", "-n", self.helper, action])
-        if r.returncode == 0:
-            return r.stdout.strip()
-
-        err = (r.stderr or r.stdout or "").lower()
-        if "password" in err or "a password is required" in err:
-            r = self._run_helper(["pkexec", self.helper, action])
-            if r.returncode == 126:
-                raise RuntimeError("pkexec: запрос прав отменён или нет polkit-агента")
-            if r.returncode != 0:
-                raise RuntimeError(
-                    r.stderr.strip()
-                    or r.stdout.strip()
-                    or f"helper {action}: код {r.returncode}"
-                )
-            return r.stdout.strip()
-
-        raise RuntimeError(
-            r.stderr.strip()
-            or r.stdout.strip()
-            or f"helper {action}: код {r.returncode}"
-        )
+    def _helper(self, action: str, config: dict | None = None) -> str:
+        """Запрашивает авторизацию polkit и передаёт конфигурацию через stdin."""
+        if not os.access(self.helper, os.X_OK):
+            raise RuntimeError(
+                "Системный помощник не установлен. Запустите ./tools/install.sh."
+            )
+        try:
+            result = subprocess.run(
+                ["/usr/bin/pkexec", "--disable-internal-agent", self.helper, action],
+                input=json.dumps(config) if config is not None else "",
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        except FileNotFoundError as exc:
+            raise RuntimeError("Для управления VPN установите пакет pkexec.") from exc
+        if result.returncode == 126:
+            raise RuntimeError("Запрос прав администратора отменён.")
+        if result.returncode == 127:
+            raise RuntimeError(
+                "Ubuntu не выдала права. Запустите CyberX VPN из графического сеанса "
+                "и подтвердите запрос администратора."
+            )
+        if result.returncode:
+            raise RuntimeError(
+                result.stderr.strip() or f"Ошибка {action}: {result.returncode}"
+            )
+        return result.stdout.strip()
 
     @staticmethod
     def _current_dns_server() -> str | None:
         """Возвращает первый IP DNS из resolv.conf до подъёма TUN."""
-        try:
-            with open("/etc/resolv.conf", encoding="utf-8") as resolv_conf:
-                for line in resolv_conf:
-                    fields = line.split()
-                    if len(fields) == 2 and fields[0] == "nameserver":
+        for path in ("/etc/resolv.conf", "/run/systemd/resolve/resolv.conf"):
+            try:
+                with open(path, encoding="utf-8") as resolv_conf:
+                    for line in resolv_conf:
+                        fields = line.split()
+                        if len(fields) < 2 or fields[0] != "nameserver":
+                            continue
                         try:
-                            return str(ipaddress.ip_address(fields[1]))
+                            address = str(ipaddress.ip_address(fields[1]))
                         except ValueError:
                             continue
-        except OSError:
-            pass
+                        # resolved направит запрос, посланный локальному stub, в VPN.
+                        if address not in {"127.0.0.53", "127.0.0.54"}:
+                            return address
+            except OSError:
+                continue
         return None
 
     def start(self, server: dict, routing: dict | None = None) -> str:
-        """Пишет конфиг sing-box и поднимает туннель через helper."""
+        """Передаёт конфигурацию помощнику и поднимает туннель."""
         routing = routing or {}
-        os.makedirs(self.runtime_dir, exist_ok=True)
-        cfg_path = os.path.join(self.runtime_dir, "singbox.json")
-        direct_dns = self._current_dns_server()
-        with open(cfg_path, "w", encoding="utf-8") as f:
-            json.dump(
-                build_singbox_config(
-                    server,
-                    exclude_lan=routing.get("exclude_lan", True),
-                    bypass=routing.get("bypass", []),
-                    direct_dns=direct_dns,
-                ),
-                f,
-                indent=2,
-            )
-        return self._helper("up")
+        config = build_singbox_config(
+            server,
+            exclude_lan=routing.get("exclude_lan", True),
+            bypass=routing.get("bypass", []),
+            direct_dns=self._current_dns_server(),
+        )
+        return self._helper("up", config)
 
     def stop(self) -> str:
-        """Останавливает туннель и восстанавливает resolv.conf через helper."""
-        if self.is_running():
-            return self._helper("down")
-        return "DOWN"
+        """Останавливает туннель и освобождает настройки DNS."""
+        return self._helper("down")
